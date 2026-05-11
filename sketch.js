@@ -1,6 +1,6 @@
 // sketch.js
-// 需要使用 p5.js + ml5.js
-// 功能：攝影機畫面置中、左右鏡像、偵測耳垂、手勢切換耳環
+// 需要 p5.js + ml5.js
+// 功能：京劇換臉、臉譜覆蓋、保留眼睛與嘴巴、手勢揮動換臉
 
 let video;
 let faceMesh;
@@ -9,84 +9,65 @@ let handPose;
 let faces = [];
 let hands = [];
 
-let earrings = [];
-let currentAcc = 1;
+let faceImgs = [];
+let currentFace = 1;
 
 let videoW;
 let videoH;
 let videoX;
 let videoY;
 
+let lastHandX = null;
+let lastHandY = null;
+let waveCooldown = 0;
+
 function preload() {
-  // 載入 FaceMesh 模型
   faceMesh = ml5.faceMesh({
     maxFaces: 1,
     refineLandmarks: true,
     flipped: true
   });
 
-  // 載入 HandPose 模型
   handPose = ml5.handPose({
     maxHands: 1,
     flipped: true
   });
 
-  // 載入 earrings 資料夾中的五個耳環圖片
-  for (let i = 1; i <= 5; i++) {
-    earrings[i] = loadImage("earrings/acc" + i + ".png");
+  // 載入 Face 資料夾裡的 6 張臉譜
+  // 檔名：01.png、02.png、03.png、04.png、05.png、06.png
+  for (let i = 1; i <= 6; i++) {
+    let fileName = nf(i, 2);
+    faceImgs[i] = loadImage("Face/" + fileName + ".png");
   }
 }
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
 
-  // 開啟攝影機
   video = createCapture(VIDEO);
   video.size(640, 480);
   video.hide();
 
-  // 開始偵測臉部
   faceMesh.detectStart(video, gotFaces);
-
-  // 開始偵測手部
   handPose.detectStart(video, gotHands);
 }
 
 function draw() {
   background("#BBFFBB");
 
-  // 攝影機影像寬高為全螢幕的 50%
-  videoW = width * 0.5;
-  videoH = height * 0.5;
+  setVideoArea();
 
-  // 維持攝影機 4:3 比例，避免畫面變形
-  let ratio = 4 / 3;
+  drawMirrorVideo();
 
-  if (videoW / videoH > ratio) {
-    videoW = videoH * ratio;
-  } else {
-    videoH = videoW / ratio;
+  detectHandWaveToChangeFace();
+
+  drawPekingOperaMask();
+
+  drawInfoText();
+
+  if (waveCooldown > 0) {
+    waveCooldown--;
   }
-
-  // 讓攝影機畫面置中
-  videoX = width / 2 - videoW / 2;
-  videoY = height / 2 - videoH / 2;
-
-  // 顯示左右顛倒的攝影機畫面
-  push();
-  translate(videoX + videoW, videoY);
-  scale(-1, 1);
-  image(video, 0, 0, videoW, videoH);
-  pop();
-
-  // 偵測手勢，決定要戴哪一個耳環
-  detectHandGesture();
-
-  // 偵測耳垂並畫上耳環
-  drawEarrings();
-
-  // 畫面說明文字
-  drawTextInfo();
 }
 
 function gotFaces(results) {
@@ -97,157 +78,268 @@ function gotHands(results) {
   hands = results;
 }
 
-function drawEarrings() {
+function setVideoArea() {
+  videoW = width * 0.5;
+  videoH = height * 0.5;
+
+  let ratio = 4 / 3;
+
+  if (videoW / videoH > ratio) {
+    videoW = videoH * ratio;
+  } else {
+    videoH = videoW / ratio;
+  }
+
+  videoX = width / 2 - videoW / 2;
+  videoY = height / 2 - videoH / 2;
+}
+
+function drawMirrorVideo() {
+  push();
+  translate(videoX + videoW, videoY);
+  scale(-1, 1);
+  image(video, 0, 0, videoW, videoH);
+  pop();
+}
+
+function drawPekingOperaMask() {
   if (faces.length === 0) return;
 
   let face = faces[0];
-
   if (!face.keypoints) return;
 
-  // 使用 FaceMesh 臉部邊緣點模擬左右耳垂位置
-  // 234 接近左耳位置
-  // 454 接近右耳位置
-  let leftEarPoint = face.keypoints[234];
-  let rightEarPoint = face.keypoints[454];
+  let k = face.keypoints;
 
-  if (!leftEarPoint || !rightEarPoint) return;
+  // 臉部主要定位點
+  let top = getPoint(k[10]);       // 額頭上方
+  let chin = getPoint(k[152]);     // 下巴
+  let leftSide = getPoint(k[234]); // 左臉側
+  let rightSide = getPoint(k[454]); // 右臉側
 
-  let leftEar = convertPoint(leftEarPoint);
-  let rightEar = convertPoint(rightEarPoint);
+  if (!top || !chin || !leftSide || !rightSide) return;
 
-  // 讓位置往下移動一點，比較像耳垂
-  leftEar.y += videoH * 0.06;
-  rightEar.y += videoH * 0.06;
+  let faceCenterX = (leftSide.x + rightSide.x) / 2;
+  let faceCenterY = (top.y + chin.y) / 2;
 
-  // 畫黃色圓圈在耳垂位置
-  fill(255, 230, 0);
-  stroke(255);
-  strokeWeight(3);
-  circle(leftEar.x, leftEar.y, 28);
-  circle(rightEar.x, rightEar.y, 28);
+  let faceWidth = dist(leftSide.x, leftSide.y, rightSide.x, rightSide.y);
+  let faceHeight = dist(top.x, top.y, chin.x, chin.y);
 
-  // 取得目前選擇的耳環圖片
-  let accImg = earrings[currentAcc];
+  let maskW = faceWidth * 1.45;
+  let maskH = faceHeight * 1.45;
 
-  if (accImg) {
+  // 讓臉譜稍微往下，貼近整張臉
+  let maskX = faceCenterX;
+  let maskY = faceCenterY + faceHeight * 0.04;
+
+  // 根據臉的左右傾斜角度旋轉臉譜
+  let angle = atan2(rightSide.y - leftSide.y, rightSide.x - leftSide.x);
+
+  let img = faceImgs[currentFace];
+
+  if (img) {
+    push();
     imageMode(CENTER);
+    translate(maskX, maskY);
+    rotate(angle);
+    image(img, 0, 0, maskW, maskH);
+    pop();
+  }
 
-    // 耳環大小
-    let earringSize = videoW * 0.12;
+  // 將真實眼睛與嘴巴重新露出來
+  // 這樣睜眼、閉眼、張嘴時，就會跟著真人畫面變化
+  drawRealEyesAndMouth(k);
+}
 
-    // 左耳耳環
-    image(
-      accImg,
-      leftEar.x,
-      leftEar.y + earringSize * 0.35,
-      earringSize,
-      earringSize
-    );
+function drawRealEyesAndMouth(k) {
+  // 左眼參考點
+  let leftEyeA = getPoint(k[33]);
+  let leftEyeB = getPoint(k[133]);
+  let leftEyeTop = getPoint(k[159]);
+  let leftEyeBottom = getPoint(k[145]);
 
-    // 右耳耳環
-    image(
-      accImg,
-      rightEar.x,
-      rightEar.y + earringSize * 0.35,
-      earringSize,
-      earringSize
-    );
+  // 右眼參考點
+  let rightEyeA = getPoint(k[362]);
+  let rightEyeB = getPoint(k[263]);
+  let rightEyeTop = getPoint(k[386]);
+  let rightEyeBottom = getPoint(k[374]);
 
-    imageMode(CORNER);
+  // 嘴巴參考點
+  let mouthL = getPoint(k[61]);
+  let mouthR = getPoint(k[291]);
+  let mouthTop = getPoint(k[13]);
+  let mouthBottom = getPoint(k[14]);
+
+  if (
+    !leftEyeA || !leftEyeB || !leftEyeTop || !leftEyeBottom ||
+    !rightEyeA || !rightEyeB || !rightEyeTop || !rightEyeBottom ||
+    !mouthL || !mouthR || !mouthTop || !mouthBottom
+  ) {
+    return;
+  }
+
+  let leftEyeCX = (leftEyeA.x + leftEyeB.x) / 2;
+  let leftEyeCY = (leftEyeTop.y + leftEyeBottom.y) / 2;
+
+  let rightEyeCX = (rightEyeA.x + rightEyeB.x) / 2;
+  let rightEyeCY = (rightEyeTop.y + rightEyeBottom.y) / 2;
+
+  let leftEyeW = dist(leftEyeA.x, leftEyeA.y, leftEyeB.x, leftEyeB.y) * 1.7;
+  let leftEyeH = max(18, abs(leftEyeBottom.y - leftEyeTop.y) * 3.2);
+
+  let rightEyeW = dist(rightEyeA.x, rightEyeA.y, rightEyeB.x, rightEyeB.y) * 1.7;
+  let rightEyeH = max(18, abs(rightEyeBottom.y - rightEyeTop.y) * 3.2);
+
+  let mouthCX = (mouthL.x + mouthR.x) / 2;
+  let mouthCY = (mouthTop.y + mouthBottom.y) / 2;
+
+  let mouthW = dist(mouthL.x, mouthL.y, mouthR.x, mouthR.y) * 1.35;
+  let mouthH = max(22, abs(mouthBottom.y - mouthTop.y) * 3.8);
+
+  // 露出真實左眼
+  drawVideoInsideEllipse(leftEyeCX, leftEyeCY, leftEyeW, leftEyeH);
+
+  // 露出真實右眼
+  drawVideoInsideEllipse(rightEyeCX, rightEyeCY, rightEyeW, rightEyeH);
+
+  // 露出真實嘴巴
+  drawVideoInsideEllipse(mouthCX, mouthCY, mouthW, mouthH);
+
+  // 加一點細框，讓眼睛嘴巴比較自然
+  noFill();
+  stroke(0, 80);
+  strokeWeight(2);
+  ellipse(leftEyeCX, leftEyeCY, leftEyeW, leftEyeH);
+  ellipse(rightEyeCX, rightEyeCY, rightEyeW, rightEyeH);
+  ellipse(mouthCX, mouthCY, mouthW, mouthH);
+}
+
+function drawVideoInsideEllipse(cx, cy, w, h) {
+  drawingContext.save();
+
+  drawingContext.beginPath();
+  drawingContext.ellipse(
+    cx,
+    cy,
+    w / 2,
+    h / 2,
+    0,
+    0,
+    Math.PI * 2
+  );
+  drawingContext.clip();
+
+  drawMirrorVideo();
+
+  drawingContext.restore();
+}
+
+function detectHandWaveToChangeFace() {
+  if (hands.length === 0) {
+    lastHandX = null;
+    lastHandY = null;
+    return;
+  }
+
+  if (faces.length === 0) return;
+
+  let hand = hands[0];
+  let face = faces[0];
+
+  if (!hand.keypoints || !face.keypoints) return;
+
+  let handCenter = getHandCenter(hand.keypoints);
+  let faceBox = getFaceBox(face.keypoints);
+
+  if (!handCenter || !faceBox) return;
+
+  // 判斷手是否沒有擋在臉前面
+  let handInFace =
+    handCenter.x > faceBox.x &&
+    handCenter.x < faceBox.x + faceBox.w &&
+    handCenter.y > faceBox.y &&
+    handCenter.y < faceBox.y + faceBox.h;
+
+  // 只有手不在臉前面，才允許揮手換臉
+  if (!handInFace && lastHandX !== null && waveCooldown === 0) {
+    let moveX = abs(handCenter.x - lastHandX);
+    let moveY = abs(handCenter.y - lastHandY);
+
+    // 左右揮動幅度夠大，就換臉
+    if (moveX > 80 && moveY < 120) {
+      changeFace();
+      waveCooldown = 35;
+    }
+  }
+
+  lastHandX = handCenter.x;
+  lastHandY = handCenter.y;
+}
+
+function changeFace() {
+  currentFace++;
+
+  if (currentFace > 6) {
+    currentFace = 1;
   }
 }
 
-function convertPoint(point) {
-  // 將 FaceMesh 偵測座標轉換到畫布上的攝影機位置
+function getHandCenter(points) {
+  let sumX = 0;
+  let sumY = 0;
+
+  for (let i = 0; i < points.length; i++) {
+    let p = getPoint(points[i]);
+    sumX += p.x;
+    sumY += p.y;
+  }
+
+  return createVector(sumX / points.length, sumY / points.length);
+}
+
+function getFaceBox(points) {
+  let xs = [];
+  let ys = [];
+
+  for (let i = 0; i < points.length; i++) {
+    let p = getPoint(points[i]);
+    xs.push(p.x);
+    ys.push(p.y);
+  }
+
+  let minX = min(xs);
+  let maxX = max(xs);
+  let minY = min(ys);
+  let maxY = max(ys);
+
+  let boxW = maxX - minX;
+  let boxH = maxY - minY;
+
+  // 稍微放大臉部範圍，避免手靠近臉時誤判
+  return {
+    x: minX - boxW * 0.15,
+    y: minY - boxH * 0.15,
+    w: boxW * 1.3,
+    h: boxH * 1.3
+  };
+}
+
+function getPoint(point) {
+  if (!point) return null;
+
   let x = map(point.x, 0, video.width, videoX, videoX + videoW);
   let y = map(point.y, 0, video.height, videoY, videoY + videoH);
 
   return createVector(x, y);
 }
 
-function detectHandGesture() {
-  if (hands.length === 0) return;
-
-  let hand = hands[0];
-
-  if (!hand.keypoints) return;
-
-  let fingers = getFingerStates(hand);
-  let number = countFingers(fingers);
-
-  // 手比 1～5，切換 acc1.png～acc5.png
-  if (number >= 1 && number <= 5) {
-    currentAcc = number;
-  }
-}
-
-function getFingerStates(hand) {
-  let k = hand.keypoints;
-
-  let fingers = {
-    thumb: false,
-    index: false,
-    middle: false,
-    ring: false,
-    pinky: false
-  };
-
-  // 食指伸直
-  fingers.index = k[8].y < k[6].y;
-
-  // 中指伸直
-  fingers.middle = k[12].y < k[10].y;
-
-  // 無名指伸直
-  fingers.ring = k[16].y < k[14].y;
-
-  // 小指伸直
-  fingers.pinky = k[20].y < k[18].y;
-
-  // 大拇指伸直
-  let wrist = k[0];
-  let thumbTip = k[4];
-  let thumbBase = k[2];
-
-  let thumbDistance = dist(
-    thumbTip.x,
-    thumbTip.y,
-    wrist.x,
-    wrist.y
-  );
-
-  let thumbBaseDistance = dist(
-    thumbBase.x,
-    thumbBase.y,
-    wrist.x,
-    wrist.y
-  );
-
-  fingers.thumb = thumbDistance > thumbBaseDistance + 25;
-
-  return fingers;
-}
-
-function countFingers(fingers) {
-  let count = 0;
-
-  if (fingers.thumb) count++;
-  if (fingers.index) count++;
-  if (fingers.middle) count++;
-  if (fingers.ring) count++;
-  if (fingers.pinky) count++;
-
-  return count;
-}
-
-function drawTextInfo() {
+function drawInfoText() {
   fill(0);
   noStroke();
   textAlign(CENTER, CENTER);
   textSize(22);
 
   text(
-    "手比數字 1～5，可切換耳環：目前 acc" + currentAcc + ".png",
+    "京劇換臉：手在臉旁邊揮一下可換臉，目前 Face/" + nf(currentFace, 2) + ".png",
     width / 2,
     videoY + videoH + 45
   );
