@@ -1,8 +1,38 @@
-html, body {
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
   margin: 0;
   padding: 0;
+  width: 100%;
+  min-height: 100%;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top left, rgba(56, 189, 248, 0.24), transparent 34%),
+    radial-gradient(circle at bottom right, rgba(168, 85, 247, 0.24), transparent 36%),
+    linear-gradient(135deg, #020617 0%, #0f172a 45%, #111827 100%);
+  font-family: "Microsoft JhengHei", "Noto Sans TC", system-ui, sans-serif;
+}
+
+#app {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
 }
 
 canvas {
   display: block;
+  border-radius: 28px;
+  box-shadow:
+    0 30px 80px rgba(0, 0, 0, 0.48),
+    0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+/* p5 createCapture 產生的 video 隱藏 */
+video {
+  display: none !important;
 }
